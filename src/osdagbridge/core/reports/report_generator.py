@@ -130,6 +130,7 @@ from .chap7 import ch7_quantities
 from .chap8 import ch8_design_log
 from .chap9 import references
 from . import styles as S
+from .charts import build_ur_matrix, ur_heatmap_png, design_fingerprint, qr_png
 
 logger = logging.getLogger(__name__)
 
@@ -182,6 +183,8 @@ def preamble(project_name, job_number, report_date, report_version='Rev 0'):
 % Packages
 \usepackage[""" + S.PAGE["paper"] + ", margin=" + S.PAGE["margin"] + ", footskip=" + S.PAGE["footskip"] + ", headheight=" + S.PAGE["headheight"] + r"""]{geometry}
 \usepackage{graphicx}
+% QR code (optional: if qrcode.sty is not in the TeX install, only the hash text is printed)
+\IfFileExists{qrcode.sty}{\usepackage[nolink]{qrcode}\newcommand{\osdagqr}[2][1.9cm]{\qrcode[height=##1]{##2}}}{\newcommand{\osdagqr}[2][]{}}
 \usepackage{amsmath}
 \usepackage{amssymb}
 \usepackage{booktabs}
@@ -270,7 +273,21 @@ def preamble(project_name, job_number, report_date, report_version='Rev 0'):
 # TITLE PAGE
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def title_page(m, osdag_logo, org_logo):
+def _fingerprint_block(fp, qr_path=None):
+    """Title-page traceability block: QR code + readable fingerprint."""
+    if not fp:
+        return ""
+    shown = "-".join(fp[i:i + 4] for i in range(0, len(fp), 4))
+    return (r"""
+\vspace{0.7cm}
+{\small\textbf{Design Fingerprint}}\\[4pt]
+""" + (r"\includegraphics[height=1.9cm]{" + qr_path + r"}" if qr_path else r"\osdagqr{OSDAGBRIDGE-" + fp + r"}") + r"""\\[4pt]
+{\small\texttt{""" + shown + r"""}}\\[2pt]
+{\scriptsize Identifies the design inputs this report was generated from.}
+""")
+
+
+def title_page(m, osdag_logo, org_logo, fingerprint=None, qr_path=None):
     if osdag_logo:
         lhs = r'\includegraphics[width=\linewidth,keepaspectratio]{' + osdag_logo.replace('\\', '/') + r'}'
     else:
@@ -324,7 +341,7 @@ def title_page(m, osdag_logo, org_logo):
 \textbf{Report Version} & """ + (_tex(m.subtitle) if m.subtitle else '') + r""" \\
 \hline
 \end{tabular}
-\end{titlepage}
+""" + _fingerprint_block(fingerprint, qr_path) + r"""\end{titlepage}
 """
 
 
@@ -884,6 +901,35 @@ def generate_report(payload, request):
                 shutil.copy2(org_logo_src, os.path.join(tmp_assets, 'org_logo.png'))
                 org_logo_latex = 'assets/org_logo.png'
 
+            # Fingerprint of the user's design inputs, taken BEFORE quantities are merged in
+            fingerprint = design_fingerprint(payload.inputs)
+
+            # QR code of the fingerprint (drawn in Python; no TeX package needed)
+            qr_path = None
+            try:
+                _qr = qr_png('OSDAGBRIDGE-' + fingerprint)
+                if _qr:
+                    _qp = os.path.join(tmp_images, 'fingerprint_qr.png')
+                    with open(_qp, 'wb') as _f:
+                        _f.write(_qr)
+                    qr_path = _qp.replace('\\', '/')
+                else:
+                    logger.warning("QR code skipped: install 'segno' (pip install segno)")
+            except Exception as exc:
+                logger.warning(f"QR code skipped: {exc}")
+
+            # UR heatmap (Chapter 5, Utilization Overview)
+            try:
+                _r, _c, _d = build_ur_matrix(payload.output_dict)
+                _png = ur_heatmap_png(_r, _c, _d)
+                if _png:
+                    _hp = os.path.join(tmp_images, 'ur_heatmap.png')
+                    with open(_hp, 'wb') as _f:
+                        _f.write(_png)
+                    fig_paths['ur_heatmap'] = _hp.replace('\\', '/')
+            except Exception as exc:
+                logger.warning(f"UR heatmap skipped: {exc}")
+
             # Compute and inject quantities for Chapter 7
             quantities = calculate_material_quantities(payload.inputs, payload.output_dict)
             payload.inputs.update(quantities)
@@ -894,7 +940,7 @@ def generate_report(payload, request):
 
             doc_parts = []
             doc_parts.append(preamble(payload.metadata.project_name, payload.metadata.job_number, payload.metadata.report_date, payload.metadata.subtitle or 'Rev 0'))
-            doc_parts.append(title_page(payload.metadata, osdag_logo_latex, org_logo_latex))
+            doc_parts.append(title_page(payload.metadata, osdag_logo_latex, org_logo_latex, fingerprint, qr_path))
 
             if payload.options.include_toc:
                 doc_parts.append(toc_section())
@@ -913,7 +959,7 @@ def generate_report(payload, request):
             if 'analysis' in secs:
                 doc_parts.append(ch4_analysis(payload.analysis_summary, fig_paths, bridge, span_m))
             if 'design_checks' in secs:
-                doc_parts.append(ch5_design_checks(payload.design_checks, bridge))
+                doc_parts.append(ch5_design_checks(payload.design_checks, bridge, fig_paths))
             if 'drawings' in secs and payload.options.include_figures:
                 doc_parts.append(ch6_drawings(fig_paths))
 

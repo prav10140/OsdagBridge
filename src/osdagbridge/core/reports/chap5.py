@@ -1,6 +1,7 @@
 
 from __future__ import annotations
 from typing import TYPE_CHECKING
+from osdagbridge.core.reports.charts import ur_overview_tex
 
 from osdagbridge.core.utils.common import (
     KEY_DD_AS_BOT,
@@ -148,7 +149,7 @@ if TYPE_CHECKING:
 _VSP = "\n\\vspace{1em}\n"
 
 
-def ch5_design_checks(checks_data, bridge) -> str:
+def ch5_design_checks(checks_data, bridge, fig_paths=None) -> str:
     """Chapter 5 — Design Checks.
 
     Parameters
@@ -1394,5 +1395,6 @@ End diaphragms at the supports transfer transverse loads to the bearings, restra
 % ===========================
 """)
     parts.append(_VSP + t522_table + "\n")
-
+    parts.append(ur_overview_tex(od, (fig_paths or {}).get("ur_heatmap")))
+    return "\n".join(parts)
     return "\n".join(parts)
