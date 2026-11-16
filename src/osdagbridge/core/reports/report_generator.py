@@ -129,6 +129,7 @@ from .chap6 import ch6_drawings
 from .chap7 import ch7_quantities
 from .chap8 import ch8_design_log
 from .chap9 import references
+from . import styles as S
 
 logger = logging.getLogger(__name__)
 
@@ -147,16 +148,39 @@ logger = logging.getLogger(__name__)
 # PREAMBLE
 # ═══════════════════════════════════════════════════════════════════════════════
 
+def _pagestyle(name, pn, jn, rd, rv):
+    """One fancyhdr page style. main and plain are identical, so build both here."""
+    return (
+        r"\fancypagestyle{" + name + r"}{" + "\n"
+        r"  \fancyhf{}" + "\n"
+        r"  \fancyhead[L]{" + pn + r" $|$ " + jn + r"}" + "\n"
+        r"  \fancyhead[R]{" + rd + r" $|$ " + rv + r"}" + "\n"
+        r"  \fancyfoot[L]{" + S.FOOTER_LEFT + r"}" + "\n"
+        r"  \fancyfoot[R]{" + S.FOOTER_RIGHT + r"}" + "\n"
+        r"  \renewcommand{\headrule}{\color{" + S.HEADER_RULE["color"] + r"}\hrule width\headwidth height "
+        + S.HEADER_RULE["height"] + r" \vspace{" + S.HEADER_RULE["after"] + r"}}" + "\n"
+        # The "* Software default value" note sits ABOVE the rule inside the footer
+        # box (no negative \vspace), so it can never overlap the last table row.
+        r"  \renewcommand{\footrule}{%" + "\n"
+        r"    \ifbool{hasSDonPage}{\hbox to \headwidth{\textcolor{black}{\footnotesize\textit{"
+        + S.SOFTWARE_DEFAULT_NOTE + r"}}\hfil}\vspace{3pt}}{}%" + "\n"
+        r"    \color{" + S.FOOTER_RULE["color"] + r"}\hrule width\headwidth height "
+        + S.FOOTER_RULE["height"] + r" \vspace{" + S.FOOTER_RULE["after"] + r"}%" + "\n"
+        r"  }" + "\n"
+        r"}" + "\n"
+    )
+
+
 def preamble(project_name, job_number, report_date, report_version='Rev 0'):
     pn = _tex(project_name)
     jn = _tex(job_number)
     rd = _tex(report_date)
     rv = _tex(report_version)
     return r"""
-\documentclass[12pt,a4paper]{report}
+\documentclass[""" + S.PAGE["font_pt"] + "," + S.PAGE["paper"] + r"""]{report}
 
 % Packages
-\usepackage[a4paper, margin=1in]{geometry}
+\usepackage[""" + S.PAGE["paper"] + ", margin=" + S.PAGE["margin"] + ", footskip=" + S.PAGE["footskip"] + ", headheight=" + S.PAGE["headheight"] + r"""]{geometry}
 \usepackage{graphicx}
 \usepackage{amsmath}
 \usepackage{amssymb}
@@ -193,57 +217,22 @@ def preamble(project_name, job_number, report_date, report_version='Rev 0'):
 \numberwithin{table}{chapter}
 \numberwithin{figure}{chapter}
 % Table layout and spacing: consistent padding, row height, and longtable pre/post skips
-\setlength{\tabcolsep}{6pt}
-\renewcommand{\arraystretch}{1.12}
-\setlength{\LTpre}{0pt}
-\setlength{\LTpost}{6pt}
+\setlength{\tabcolsep}{""" + S.TABLE["tabcolsep"] + r"""}
+\renewcommand{\arraystretch}{""" + S.TABLE["arraystretch"] + r"""}
+\setlength{\LTpre}{""" + S.TABLE["lt_pre"] + r"""}
+\setlength{\LTpost}{""" + S.TABLE["lt_post"] + r"""}
 % Table rules (outline thickness) and small extra row height for clarity
-\setlength{\arrayrulewidth}{0.5pt}
-\setlength{\extrarowheight}{0.6pt}
+\setlength{\arrayrulewidth}{""" + S.TABLE["rule_width"] + r"""}
+\setlength{\extrarowheight}{""" + S.TABLE["extrarowheight"] + r"""}
 
 % Prevent tables from overflowing past the page bottom:
 % if fewer than 5 baseline-skips remain, break to the next page first.
 \BeforeBeginEnvironment{table}{\needspace{5\baselineskip}}
-\BeforeBeginEnvironment{longtable}{\needspace{5\baselineskip}}
+% (no needspace hook for longtable: it duplicates the table header)
 
-\definecolor{osdagGreen}{HTML}{91B014}
+\definecolor{osdagGreen}{HTML}{""" + S.C["primary"] + r"""}
 
-\fancypagestyle{main}{
-  \fancyhf{}
-  \fancyhead[L]{""" + pn + r""" $|$ """ + jn + r"""}
-  \fancyhead[R]{""" + rd + r""" $|$ """ + rv + r"""}
-  \fancyfoot[L]{Osdag $|$ FOSSEE $|$ Indian Institute of Technology Bombay}
-  \fancyfoot[R]{Page \thepage\ of \pageref{LastPage}}
-  \renewcommand{\headrule}{\color{osdagGreen}\hrule width\headwidth height 1pt \vspace{2pt}}
-  \renewcommand{\footrule}{%
-    \ifbool{hasSDonPage}{%
-      \vspace{-20pt}%
-      \hbox to \headwidth{\textcolor{black}{\footnotesize\textit{* Software default value}}\hfil}%
-      \vspace{4pt}%
-    }{%
-      \vspace{-8pt}%
-    }%
-    \color{osdagGreen}\hrule width\headwidth height 1pt \vspace{6pt}%
-  }
-}
-\fancypagestyle{plain}{
-  \fancyhf{}
-  \fancyhead[L]{""" + pn + r""" $|$ """ + jn + r"""}
-  \fancyhead[R]{""" + rd + r""" $|$ """ + rv + r"""}
-  \fancyfoot[L]{Osdag $|$ FOSSEE $|$ Indian Institute of Technology Bombay}
-  \fancyfoot[R]{Page \thepage\ of \pageref{LastPage}}
-  \renewcommand{\headrule}{\color{osdagGreen}\hrule width\headwidth height 1pt \vspace{2pt}}
-  \renewcommand{\footrule}{%
-    \ifbool{hasSDonPage}{%
-      \vspace{-20pt}%
-      \hbox to \headwidth{\textcolor{black}{\footnotesize\textit{* Software default value}}\hfil}%
-      \vspace{4pt}%
-    }{%
-      \vspace{-8pt}%
-    }%
-    \color{osdagGreen}\hrule width\headwidth height 1pt \vspace{6pt}%
-  }
-}
+""" + _pagestyle("main", pn, jn, rd, rv) + _pagestyle("plain", pn, jn, rd, rv) + r"""
 \fancypagestyle{firstpage}{
   \fancyhf{}
   \renewcommand{\headrulewidth}{0pt}
@@ -252,7 +241,7 @@ def preamble(project_name, job_number, report_date, report_version='Rev 0'):
   \renewcommand{\footrule}{\vspace{-8pt}\color{osdagGreen}\hrule width\headwidth height 1pt \vspace{6pt}}
 }
 \pagestyle{main}
-\setstretch{1.15}
+\setstretch{""" + S.PAGE["line_stretch"] + r"""}
 
 % Custom Commands
 \newcommand{\placeholder}[1]{\textit{\textless #1\textgreater}}

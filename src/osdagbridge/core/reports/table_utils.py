@@ -8,15 +8,20 @@ Both give: caption once, header repeated on every page ("Table X.Y (continued)")
 a note under the table, and no stranded banner at the bottom of a page.
 """
 
-# ---- look & feel (later: move to styles.py) --------------------------------
-HEADER_FILL = r"osdagGreen!30"
-BANNER_FILL = r"osdagGreen!15"
-BLOCK_GAP = "10pt"      # vertical gap between two girder blocks
+try:                                   # inside the osdagbridge package
+    from . import styles as S
+except ImportError:                    # standalone testing
+    import styles as S
+
+# ---- look & feel: all values come from styles.py ---------------------------
+HEADER_FILL = "osdagGreen!%d" % S.TABLE["header_fill_pct"]
+BANNER_FILL = "osdagGreen!%d" % S.TABLE["banner_fill_pct"]
+BLOCK_GAP = S.TABLE["block_gap"]       # vertical gap between two girder blocks
 # \* = never break between a banner and its first row. NOTE: do NOT put a
 # \hline/\cline/\hrule after it: \hline lets longtable break there (banner
 # stranded) and a bare \hrule overshoots the table when \LTleft=\fill.
 BANNER_END = r"\\*"
-ROW_GAP = "6pt"         # extra height at the end of each row
+ROW_GAP = S.TABLE["row_gap"]   # extra height at the end of each row
 
 
 def _head_row(headers):
