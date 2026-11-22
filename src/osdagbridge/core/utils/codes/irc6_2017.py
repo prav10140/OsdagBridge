@@ -520,37 +520,13 @@ class IRC6_2017:
         return round(IM, 3)
     
     @staticmethod
-    def cl_208_3_impact_factor(span):
-        """
-        Returns the impact factor (IM) for Class AA and Class 70R loading 
-        according to IRC:6-2017 Clause 208.3.
-
-        Parameters:
-            span (float): span in metres
-        Returns:
-            float: impact factor (IM)
-        """
-        if span < 9.0: #span less than 9 m
-            if KEY_VEHICLE[1]: # Class70R(T)
-                if span < 5.0:
-                    IM = 0.25
-                if span >= 5.0:
-                    IM = 0.10
-            elif KEY_VEHICLE[0]: # Class70R(W)
-                IM = 0.25
-        
-        elif 9.0 <= span <= 45.0: #span between 9 m and 45 m
-            if KEY_VEHICLE[1]: # Class70R(T)
-                IM = 0.10
-            elif KEY_VEHICLE[0]: # Class70R(W)
-                if span < 23.0:
-                    IM = 0.25
-                if span >= 23.0:
-                    IM = 9.0/(13.5 + span)
-        else: #span greater than 45 m
-            span = 45.0
-            IM = 9.0/(13.5 + span)
-        
+    def cl_208_3_impact_factor(span, tracked=False):
+        if span < 9.0:
+            IM = (0.25 if span < 5.0 else 0.10) if tracked else 0.25
+        elif span <= 45.0:
+            IM = 0.10 if tracked else (0.25 if span < 23.0 else 9.0 / (13.5 + span))
+        else:
+            IM = 9.0 / (13.5 + 45.0)
         return round(IM, 3)
             
     
@@ -886,21 +862,14 @@ class IRC6_2017:
     
     @staticmethod
     def cl_211_2_braking_force(design_lanes):
-        """
-        Returns braking force as per IRC:6-2017 Clause 211.2.
-        Returns:
-            float: Braking force in t (rounded to 3 decimal places)
-        """
+        braking_force_1 = 0.0
+        braking_force_2 = 0.0
         for lane in range(1, design_lanes + 1):
-            if lane == 1 or lane == 2:
-                wheel_load = IRC6_2017.cl_204_1_ClassA_vehicle()['wheel_loads']
-                braking_force_1 = 0.20 * sum(wheel_load)  # t
-            if lane > 2:
-                wheel_load = IRC6_2017.cl_204_1_Class70R_vehicle_wheel()['wheel_loads']
-                braking_force_2 = 0.05 * sum(wheel_load)  # t
-            
-            total_braking_force = braking_force_1 + braking_force_2
-        return round(total_braking_force, 3)
+            if lane <= 2:
+                braking_force_1 = 0.20 * sum(IRC6_2017.cl_204_1_ClassA_vehicle()['wheel_loads'])
+            else:
+                braking_force_2 = 0.05 * sum(IRC6_2017.cl_204_1_Class70R_vehicle_wheel()['wheel_loads'])
+        return round(braking_force_1 + braking_force_2, 3)
     
     @staticmethod
     def cl_211_3_braking_force_location():
