@@ -1,4 +1,4 @@
-
+# osdagbridge/core/reports/charts.py
 """Charts and traceability helpers for the design report.
 
 All colours come from styles.py (single source of truth).
@@ -25,7 +25,7 @@ _VOLATILE = ("date", "time", "timestamp", "path", "file", "folder", "dir")
 # --------------------------------------------------------------------------
 # Data extraction
 # --------------------------------------------------------------------------
-def build_ur_matrix(output_dict):
+def build_ur_matrix(output_dict, n_girders=None):
     """Return (rows, cols, data): girders x checks of utilization ratios.
 
     Reads output_dict["design_results"]["per_girder"][G]["checks"], the same
@@ -34,6 +34,9 @@ def build_ur_matrix(output_dict):
     """
     per_girder = ((output_dict.get("design_results") or {}).get("per_girder")) or {}
     rows = [g for g in per_girder if not str(g).startswith("EB")]
+    if n_girders:                       # ignore stale results of girders not in this design
+        keep = {f"G{i}" for i in range(1, int(n_girders) + 1)}
+        rows = [g for g in rows if str(g) in keep]
     labels = {}
     for g in rows:
         for chk in (per_girder[g].get("checks") or []):
@@ -44,11 +47,15 @@ def build_ur_matrix(output_dict):
         ids = sorted(labels)
     except TypeError:
         ids = sorted(labels, key=str)
-    cols = [labels[i] for i in ids]
-    data = []
+    full = []
     for g in rows:
         by_id = {c.get("check_id"): c.get("dcr") for c in (per_girder[g].get("checks") or [])}
-        data.append([_num(by_id.get(i)) for i in ids])
+        full.append([_num(by_id.get(i)) for i in ids])
+    # drop checks whose ratio is 0 for every girder (feasibility flags, not real URs)
+    keep_cols = [j for j in range(len(ids))
+                 if any((r[j] or 0.0) > 0.0 for r in full)]
+    cols = [labels[ids[j]] for j in keep_cols]
+    data = [[r[j] for j in keep_cols] for r in full]
     return rows, cols, data
 
 
@@ -79,7 +86,12 @@ def governing(rows, cols, data):
 # Heatmap
 # --------------------------------------------------------------------------
 def ur_heatmap_png(rows, cols, data, dpi=None):
-    """Girders x checks utilization-ratio heatmap. Returns PNG bytes or None."""
+    """Utilization-ratio heatmap, one row per check and one column per girder.
+
+    `rows` are girders and `cols` are checks, as returned by build_ur_matrix();
+    the picture is transposed so long check names stay readable at page width.
+    Returns PNG bytes, or None when there is nothing to draw.
+    """
     import numpy as np
     import matplotlib
     matplotlib.use("Agg")
@@ -88,9 +100,10 @@ def ur_heatmap_png(rows, cols, data, dpi=None):
 
     if not rows or not cols:
         return None
-    arr = np.array([[np.nan if v is None else v for v in r] for r in data], float)
+    arr = np.array([[np.nan if v is None else v for v in r] for r in data], float).T
     if np.all(np.isnan(arr)):
         return None
+    n_checks, n_girders = arr.shape
 
     warn, fail = S.CHART["warn_from"], S.CHART["fail_from"]
     vmax = max(1.2, float(np.nanmax(arr)))
@@ -98,38 +111,38 @@ def ur_heatmap_png(rows, cols, data, dpi=None):
     cmap = "Greys" if bw else "RdYlGn_r"
     norm = TwoSlopeNorm(vmin=0.0, vcenter=warn, vmax=vmax) if not bw else None
 
-    wrapped = ["\n".join(textwrap.wrap(c, 14)) or c for c in cols]
-    fig, ax = plt.subplots(figsize=(max(5.0, 1.15 * len(cols) + 1.8),
-                                    max(2.2, 0.62 * len(rows) + 1.6)))
+    fig_w = max(5.6, 1.0 * n_girders + 4.2)
+    fig_h = max(2.6, 0.46 * n_checks + 1.3)
+    fig, ax = plt.subplots(figsize=(fig_w, fig_h))
     im = ax.imshow(np.ma.masked_invalid(arr), cmap=cmap, norm=norm,
                    vmin=None if norm else 0.0, vmax=None if norm else vmax, aspect="auto")
-    ax.set_xticks(range(len(cols)))
-    ax.set_xticklabels(wrapped, fontsize=8)
+    ax.set_xticks(range(n_girders))
+    ax.set_xticklabels(rows, fontsize=10, fontweight="bold")
     ax.xaxis.tick_top()
-    ax.set_yticks(range(len(rows)))
-    ax.set_yticklabels(rows, fontsize=9)
+    ax.set_yticks(range(n_checks))
+    ax.set_yticklabels(["\n".join(textwrap.wrap(c, 30)) or c for c in cols], fontsize=9)
     ax.tick_params(length=0)
     for sp in ax.spines.values():
         sp.set_visible(False)
 
-    for i in range(len(rows)):
-        for j in range(len(cols)):
+    for i in range(n_checks):
+        for j in range(n_girders):
             v = arr[i, j]
             if np.isnan(v):
-                ax.text(j, i, "n/a", ha="center", va="center", fontsize=7, color="#888888")
+                ax.text(j, i, "n/a", ha="center", va="center", fontsize=8, color="#888888")
             else:
                 dark = bw and v > 0.6
-                ax.text(j, i, f"{v:.2f}", ha="center", va="center", fontsize=8.5,
+                ax.text(j, i, f"{v:.2f}", ha="center", va="center", fontsize=10,
                         fontweight="bold" if v > fail else "normal",
                         color="white" if dark else "black")
 
     i, j = np.unravel_index(np.nanargmax(arr), arr.shape)       # governing cell
-    ax.add_patch(plt.Rectangle((j - .5, i - .5), 1, 1, fill=False, lw=2.6, ec="black"))
-    cb = fig.colorbar(im, ax=ax, fraction=0.035, pad=0.02)
-    cb.set_label("Utilization Ratio", fontsize=8)
-    cb.ax.tick_params(labelsize=7)
+    ax.add_patch(plt.Rectangle((j - .5, i - .5), 1, 1, fill=False, lw=2.8, ec="black"))
+    cb = fig.colorbar(im, ax=ax, fraction=0.04, pad=0.02)
+    cb.set_label("Utilization Ratio", fontsize=9)
+    cb.ax.tick_params(labelsize=8)
     if not bw:
-        cb.ax.axhline(fail, color=S.CHART["threshold_color"], lw=1.2, ls=S.CHART["threshold_ls"])
+        cb.ax.axhline(fail, color=S.CHART["threshold_color"], lw=1.4, ls=S.CHART["threshold_ls"])
 
     buf = io.BytesIO()
     fig.savefig(buf, format="png", dpi=dpi or S.CHART["dpi"], bbox_inches="tight")
@@ -140,8 +153,8 @@ def ur_heatmap_png(rows, cols, data, dpi=None):
 # --------------------------------------------------------------------------
 # LaTeX for the Chapter 5 "Utilization Overview" section
 # --------------------------------------------------------------------------
-def ur_overview_tex(output_dict, heatmap_path=None, top_n=5):
-    rows, cols, data = build_ur_matrix(output_dict)
+def ur_overview_tex(output_dict, heatmap_path=None, top_n=5, n_girders=None):
+    rows, cols, data = build_ur_matrix(output_dict, n_girders)
     gov = governing(rows, cols, data)
     if gov is None:
         return ""

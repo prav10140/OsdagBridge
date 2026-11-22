@@ -1,12 +1,19 @@
 # ═══════════════════════════════════════════════════════════════════════════════
 # EXECUTIVE SUMMARY
 # ═══════════════════════════════════════════════════════════════════════════════
+#
+# Changes in this revision
+#   * Table 1: the header row is written on ONE line, so the whole-report table
+#     theme (table_utils.apply_table_theme) can recognise it and shade it gray,
+#     together with the first column.
+#   * Girder spacing and deck thickness now show their units (m, mm).
 
 from osdagbridge.core.reports.report_utils import _fig_or_placeholder, _render_value, _tex, get_girder_entries
 from osdagbridge.core.utils.common import (
     KEY_CARRIAGEWAY_WIDTH,
     KEY_SD_SECTION_DESIGNATION,
     KEY_SPAN,
+    KEY_MP_ED_TYPE,
     KEY_STRUCTURE_TYPE,
     KEY_TS_DECK_THICKNESS,
     KEY_TS_GIRDER_SPACING,
@@ -80,9 +87,16 @@ def executive_summary(input_dict, output_dict, fig_paths) -> str:
     failing = []                        # failing check names (order-preserving, deduped)
     gov_name, gov_dcr = "", None
     girder_max_ur = None
+    try:                                # only the girders that exist in this design
+        _n_g = int(input_dict.get(KEY_TS_NO_OF_GIRDERS))
+        _valid_g = {f"G{i}" for i in range(1, _n_g + 1)}
+    except (TypeError, ValueError):
+        _valid_g = None
     for g, gd in per_girder.items():
         if str(g).startswith("EB"):     # skip edge-beam pseudo girders
             continue
+        if _valid_g is not None and str(g) not in _valid_g:
+            continue                    # stale results of a girder not in this design
         for chk in (gd.get("checks") or []):
             try:
                 _val = chk.get("dcr")
@@ -127,6 +141,33 @@ def executive_summary(input_dict, output_dict, fig_paths) -> str:
     else:
         overall_utilization_ratio = ""
 
+    # Key Design Outcomes: computed from the real results (never hard-coded)
+    _cb_max = _max_member_efficiency(cb_results)
+    _ed_max = _max_member_efficiency(ed_results)
+    if _ed_max is None and _cb_max is not None:
+        ed_type = next(
+            (str(v) for k, v in input_dict.items() if str(k).startswith(KEY_MP_ED_TYPE) and v),
+            "",
+        )
+        if "brac" in ed_type.strip().lower():
+            _ed_max = _cb_max
+
+    def _outcome(label, ur, detail=""):
+        if ur is None:
+            return label + " design: not evaluated"
+        if ur > 1.0:
+            extra = (" (" + _tex(detail) + ")") if detail else ""
+            return (label + r" design: \textcolor{red}{\textbf{FAIL}}" + extra
+                    + f" --- max UR {ur:.2f}")
+        return label + r" design: \textbf{PASS}" + f" --- max UR {ur:.2f}"
+
+    outcomes_tex = " \\\\\n".join([
+        _outcome("Girder", girder_max_ur, ", ".join(failing)),
+        _outcome("Cross bracing", _cb_max),
+        _outcome("End Diaphragm", _ed_max),
+        _outcome("Deck", deck_max),
+    ])
+
     gov = _tex(gov_name) if gov_name not in (None, '', 'None') else ''
     ur = _tex(overall_utilization_ratio) if overall_utilization_ratio else ''
 
@@ -144,9 +185,9 @@ def executive_summary(input_dict, output_dict, fig_paths) -> str:
     girder_col_cm = round(max(1.5, (15.0 - label_col_cm) / n_cols), 1)
     col_spec = '|C{' + str(label_col_cm) + 'cm}|' + '|'.join(['C{' + str(girder_col_cm) + 'cm}'] * n_cols) + '|'
 
-    # Header row
-    hdr_cells = ' &\n  '.join([r'\textbf{' + _tex(lbl) + '}' for lbl, _ in labels])
-    header_row = r'  \textbf{} &' + '\n  ' + hdr_cells + r' \\' + '\n'
+    # Header row: ONE line, so the table theme can find and shade it
+    hdr_cells = ' & '.join([r'\textbf{' + _tex(lbl) + '}' for lbl, _ in labels])
+    header_row = r'\textbf{} & ' + hdr_cells + r' \\' + '\n'
 
     # Member ID row
     mid_cells = ' & '.join([_tex(mid) for _, mid in labels])
@@ -202,9 +243,9 @@ This section provides a concise summary of the bridge design, key inputs, govern
 \hline
 \textbf{No. of Girders} & """ + (_render_value(input_dict, KEY_TS_NO_OF_GIRDERS)) + r""" \\
 \hline
-\textbf{Girder Spacing} & """ + (_render_value(input_dict, KEY_TS_GIRDER_SPACING)) + r""" \\
+\textbf{Girder Spacing} & """ + (_render_value(input_dict, KEY_TS_GIRDER_SPACING, ' m')) + r""" \\
 \hline
-\textbf{Deck Thickness} & """ + (_render_value(input_dict, KEY_TS_DECK_THICKNESS)) + r""" \\
+\textbf{Deck Thickness} & """ + (_render_value(input_dict, KEY_TS_DECK_THICKNESS, ' mm')) + r""" \\
 \hline
 \textbf{Overall Design Status} & """ + (_tex(overall_design_status)) + r""" \\
 \hline
@@ -230,10 +271,7 @@ This section provides a concise summary of the bridge design, key inputs, govern
 \addcontentsline{toc}{section}{Key Design Outcomes Summary}
 \label{sec:key-outcomes}
 
-\noindent Girder design pass \\
-Cross bracing design pass \\
-End Diaphragm design pass \\
-Deck design pass
+\noindent """ + outcomes_tex + r"""
 
 \section*{Design Assumptions and Limitations}
 \addcontentsline{toc}{section}{Design Assumptions and Limitations}

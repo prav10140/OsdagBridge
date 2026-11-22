@@ -101,7 +101,7 @@ This section documents all inputs provided to OsdagBridge. User-provided inputs 
 \label{subsec:project-location}
 \begin{tabular}{|L{5.5cm}|L{8.5cm}|}
 \hline
-\textbf{parameter} & \textbf{value} \\
+\textbf{Parameter} & \textbf{Value} \\
 \hline
 \textnormal{Project Location} & """ + _tex(m.project_location) + r""" \\
 \hline
@@ -122,7 +122,7 @@ This section documents all inputs provided to OsdagBridge. User-provided inputs 
 \label{subsec:bridge-geometry}
 \begin{tabular}{|L{5.5cm}|L{8.5cm}|}
 \hline
-\textbf{parameter} & \textbf{value} \\
+\textbf{Parameter} & \textbf{Value} \\
 \hline
 \textnormal{Type of Structure} & """ + (_render_value(input_dict, KEY_STRUCTURE_TYPE)) + r""" \\
 \hline
@@ -145,7 +145,7 @@ This section documents all inputs provided to OsdagBridge. User-provided inputs 
 \label{subsec:material}
 \begin{tabular}{|L{5.5cm}|L{8.5cm}|}
 \hline
-\textbf{parameter} & \textbf{value} \\
+\textbf{Parameter} & \textbf{Value} \\
 \hline
 \textnormal{Girder Steel Grade (IS 2062)} & """ + (_render_value(input_dict, KEY_GIRDER)) + r""" \\
 \hline
@@ -170,7 +170,7 @@ Where the user has modified additional inputs, those values are reported here. W
 \begin{longtable}{|L{5.5cm}|p{10.0cm}|}
 \caption{\textbf{Typical Section Details}}
 \hline
-\textbf{parameter} & \textbf{value} \\
+\textbf{Parameter} & \textbf{Value} \\
 \hline
 \textnormal{Overall Bridge Width (m)} & """ + (_render_value(input_dict, KEY_TS_OVERALL_WIDTH)) + r""" \\[6pt]
 \hline
@@ -193,7 +193,7 @@ Where the user has modified additional inputs, those values are reported here. W
 \begin{longtable}{|L{5.5cm}|p{10.0cm}|}
 \caption{\textbf{Components Details}}
 \hline
-\textbf{parameter} & \textbf{value} \\
+\textbf{Parameter} & \textbf{Value} \\
 \hline
 \textnormal{Crash Barrier Type} & """ + (_render_value(input_dict, KEY_CB_TYPE)) + r""" \\[6pt]
 \hline
@@ -238,19 +238,27 @@ def _girder_tables(input_dict, n_girders):
     ]
 
     # Helper: one girder-dimension row
+    def _mm(key, kind):
+        """Section dimension in mm. The design pipeline stores these in metres
+        (1.12), so clear metre values are converted; mm values pass through."""
+        v = input_dict.get(key)
+        try:
+            f = float(v)
+        except (TypeError, ValueError):
+            return "---"
+        limit = 10.0 if kind == "size" else 1.0       # plate sizes vs thicknesses
+        if f < limit:
+            f *= 1000.0
+        return f"{f:.0f} mm"
+
     def _dim_row(g_lbl, i):
-        return (g_lbl + r""" & """
-                + (_render_value(input_dict, f"{KEY_MP_GIRDER_DEPTH}.G{i}.M1", ' mm'))
-                + r""" & """
-                + (_render_value(input_dict, f"{KEY_MP_GIRDER_WEB_THICKNESS}.G{i}.M1", ' mm'))
-                + r""" & """
-                + (_render_value(input_dict, f"{KEY_MP_GIRDER_TOP_FLANGE_WIDTH}.G{i}.M1", ' mm'))
-                + ', '
-                + (_render_value(input_dict, f"{KEY_MP_GIRDER_TOP_FLANGE_THICKNESS}.G{i}.M1", ' mm'))
-                + r""" & """
-                + (_render_value(input_dict, f"{KEY_MP_GIRDER_BOTTOM_FLANGE_WIDTH}.G{i}.M1", ' mm'))
-                + ', '
-                + (_render_value(input_dict, f"{KEY_MP_GIRDER_BOTTOM_FLANGE_THICKNESS}.G{i}.M1", ' mm'))
+        k = lambda base: f"{base}.G{i}.M1"
+        return (g_lbl + r""" & """ + _mm(k(KEY_MP_GIRDER_DEPTH), "size")
+                + r""" & """ + _mm(k(KEY_MP_GIRDER_WEB_THICKNESS), "thk")
+                + r""" & """ + _mm(k(KEY_MP_GIRDER_TOP_FLANGE_WIDTH), "size") + ", "
+                + _mm(k(KEY_MP_GIRDER_TOP_FLANGE_THICKNESS), "thk")
+                + r""" & """ + _mm(k(KEY_MP_GIRDER_BOTTOM_FLANGE_WIDTH), "size") + ", "
+                + _mm(k(KEY_MP_GIRDER_BOTTOM_FLANGE_THICKNESS), "thk")
                 + r""" \\[8pt]
 \hline
 """)
@@ -328,7 +336,7 @@ def _girder_tables(input_dict, n_girders):
 \vspace{0.6em}
 
 \vspace{4pt}
-\begin{longtable}{|L{1.4cm}|p{2.2cm}|p{2.2cm}|p{3.0cm}|p{2.4cm}|p{2.2cm}|}
+\begin{longtable}{|L{1.2cm}|p{2.1cm}|p{2.6cm}|p{2.9cm}|p{2.2cm}|p{2.2cm}|}
 \caption{\textbf{Girder Restraint and Stiffener Details}}\\
 \hline
 \textbf{Girder} & \textbf{Torsional / Warping Restraint} & \textbf{Web Philosophy} & \textbf{Intermediate Stiffeners} & \textbf{Longitudinal Stiffeners} & \textbf{Bearing Stiffener} \\[6pt]
@@ -426,7 +434,7 @@ def _shear_connector_table(input_dict, output_dict=None):
 \begin{longtable}{|L{5.5cm}|p{10.0cm}|}
 \caption{\textbf{Shear Connector Details}}
 \hline
-\textbf{parameter} & \textbf{value} \\
+\textbf{Parameter} & \textbf{Value} \\
 \hline
 \textnormal{Stud Diameter (mm)} & """ + (_render_value(od, KEY_SD_SHEAR_DIAMETER, ' mm')) + r""" \\[6pt]
 \hline
@@ -454,7 +462,7 @@ def _safety_factors_table(input_dict):
 \begin{longtable}{|L{5.5cm}|p{10.0cm}|}
 \caption{\textbf{Partial Safety Factors}}
 \hline
-\textbf{parameter} & \textbf{value} \\
+\textbf{Parameter} & \textbf{Value} \\
 \hline
 \textnormal{$\gamma_{M0}$ (Yielding / Buckling)} & """ + (_render_value(input_dict, KEY_DO_GAMMA_M0)) + r""" \\[6pt]
 \hline
@@ -472,4 +480,3 @@ def _safety_factors_table(input_dict):
 \hline
 \end{longtable}
 """
-

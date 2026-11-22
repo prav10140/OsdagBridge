@@ -1,6 +1,14 @@
 # =============================================================================
 # Chapter 3: Loads and Load Combinations
 # Extracted from report_generator.py — DO NOT add business logic here.
+#
+# Live-load section (this revision)
+#   * Vehicle table  : Vehicle | Total Load (kN) | Impact Factor |
+#                      Braking Load -> Considered? | Value (kN) | Eccentricity (m)
+#                      one row per vehicle selected in the Loading tab
+#   * Braking summary: Parameter | Value | Unit | Reference
+#   * Centrifugal    : per vehicle, with radius / speed / force / eccentricity
+#   * Footway        : Parameter | Value | Unit | Reference
 # =============================================================================
 
 from osdagbridge.core.utils.common import (
@@ -54,10 +62,17 @@ from osdagbridge.core.utils.common import (
 )
 
 from osdagbridge.core.reports.report_utils import _tex, _render_value
-from osdagbridge.core.reports.table_utils import longtable_raw
+from osdagbridge.core.reports.table_utils import longtable_raw, HEADER_FILL, note_rows
+
+def _na(v):
+    """Show N/A instead of an empty cell."""
+    return v if str(v).strip() not in ("", "---", "kN") else "N/A"
+
 
 _VSP = "\n\\vspace{1em}\n"
 _KV_SPEC = r"|L{5.4cm}|L{9.0cm}|"
+_G = 9.81                       # kN per tonne-force (same value chap3 used for braking)
+_DASH = "---"
 
 
 def _kv_table(caption, rows):
@@ -66,133 +81,247 @@ def _kv_table(caption, rows):
     return longtable_raw(caption=caption, col_spec=_KV_SPEC,
                          headers=["Parameter", "Value"], body=body)
 
-def ch3_loads(input_dict):
-    # Live load vehicle names mapping
-    vehicles = []
-    if input_dict.get(KEY_LL_IRC_CLASS_A):
-        vehicles.append("Class A")
-    if input_dict.get(KEY_LL_IRC_70R_WHEELED):
-        vehicles.append("Class 70R (Wheeled)")
-    if input_dict.get(KEY_LL_IRC_70R_TRACKED):
-        vehicles.append("Class 70R (Tracked)")
-    if input_dict.get(KEY_LL_IRC_AA_WHEELED):
-        vehicles.append("Class AA (Wheeled)")
-    if input_dict.get(KEY_LL_IRC_AA_TRACKED):
-        vehicles.append("Class AA (Tracked)")
-    if input_dict.get(KEY_LL_IRC_CLASS_SV):
-        vehicles.append("Class SV")
-    if input_dict.get(KEY_LL_IRC_70R_BOGIE):
-        vehicles.append("Class 70R (Bogie)")
-    if input_dict.get(KEY_LL_IRC_CLASS_FATIGUE):
-        vehicles.append("Class Fatigue")
-    
-    custom = input_dict.get(KEY_LL_CUSTOM_VEHICLES)
-    if custom and isinstance(custom, list):
-        for c in custom:
-            if isinstance(c, dict) and c.get('name'):
-                vehicles.append(c['name'])
-            elif isinstance(c, str):
-                vehicles.append(c)
-                
-    vehicles_str = ", ".join(vehicles) if vehicles else "None"
 
+# -----------------------------------------------------------------------------
+# Small helpers for the live-load tables
+# -----------------------------------------------------------------------------
+def _num(v):
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return None
+
+
+def _fmt(v, nd=2):
+    return f"{v:.{nd}f}" if v is not None else "N/A"
+
+
+def _find_input(input_dict, *needles, exclude=()):
+    """First numeric input whose key contains every needle (case-insensitive)."""
+    for k, v in input_dict.items():
+        ks = str(k).lower()
+        if all(n in ks for n in needles) and not any(x in ks for x in exclude):
+            f = _num(v)
+            if f is not None:
+                return f
+    return None
+
+
+def _to_kN(total, expected_tonnes):
+    """The IRC6 vehicle functions return loads in the backend's own unit `t`
+    (tonne, kN, N, ... depending on keyfile). Check that the sum is the known IRC
+    train load in one of those units, then report it in kN."""
+    if total is None or not expected_tonnes:
+        return None
+    ratio = total / expected_tonnes
+    # value of "1 tonne" in the backend unit: t, kN (9.81 / 9.80665), N, kg
+    for unit in (1.0, 9.81, 9.80665, 1000.0, 9810.0, 9806.65):
+        if abs(ratio - unit) <= 0.02 * unit:
+            return expected_tonnes * _G
+    return None
+
+
+def _vehicle_total_kN(irc, key):
+    """Total vehicle load in kN, taken from the IRC6 backend functions."""
+    try:
+        if key == "A":
+            return _to_kN(sum(irc.cl_204_1_ClassA_vehicle()["wheel_loads"]), 55.4)
+        if key == "70R_W":
+            return _to_kN(sum(irc.cl_204_1_Class70R_vehicle_wheel()["wheel_loads"]), 100.0)
+        if key == "70R_T":
+            d = irc.cl_204_1_Class70R_vehicle_track()
+            length = d["x"][1] - d["x"][0]
+            return _to_kN(d["wheel_loads_udl"] * length * len(d["z"]), 70.0)
+        if key == "SV":
+            return _num(irc.cl_204_5_1_special_vehicle()["total_load_kN"])
+        if key == "FATIGUE":
+            return _to_kN(sum(irc.cl_204_6_fatigue_load()["wheel_loads"]), 40.0)
+    except Exception:
+        return None
+    # No backend function exists yet for these IRC 6 Cl. 204.1 vehicles:
+    # IRC 6 Cl. 204.1 train loads (tonnes) -> kN. Replace by backend values when added.
+    CODE_T = {"AA_W": 40.0, "AA_T": 70.0, "70R_B": 40.0}
+    if key in CODE_T:
+        return CODE_T[key] * _G
+    return None
+
+
+def _two_row_header_longtable(caption, col_spec, note=None):
+    """Vehicle table shell with the two-row 'Braking Load' group header.
+    The header repeats on every page (\\endfirsthead / \\endhead); the note is printed
+    under the caption so it can never end up alone on another page."""
+    hf = r"\rowcolor{" + HEADER_FILL + r"}"
+    h1 = (hf + r" \small\textbf{Vehicle} & \small\textbf{Total Load} & \small\textbf{Impact} & "
+          r"\multicolumn{3}{c|}{\small\textbf{Braking Load}} \\ \cline{4-6}")
+    h2 = (hf + r" & \small\textbf{(kN)} & \small\textbf{Factor} & \small\textbf{Considered?} & "
+          r"\small\textbf{Value (kN)} & \small\textbf{Eccentricity (m)} \\ \hline")
+    cont = (r"\multicolumn{6}{l}{\small\textit{\tablename~\thetable\ (continued)}} \\")
+    return (r"\begin{longtable}{" + col_spec + "}\n"
+            r"\caption{" + caption + r"} \\" + "\n"
+            + "\n".join(note_rows(col_spec, 6, note)) + ("\n" if note else "")
+            + "\\hline\n" + h1 + "\n" + h2 + "\n"
+            r"\endfirsthead" + "\n" + cont + "\n\\hline\n" + h1 + "\n" + h2 + "\n"
+            r"\endhead" + "\n")
+
+
+def _vu_table(caption, rows, note=None):
+    """Parameter | Value | Unit | Reference table (unit has its own column)."""
+    body = "\n".join(f"{p} & {v} & {u} & {r} \\\\[6pt]\n\\hline" for p, v, u, r in rows)
+    return longtable_raw(caption=caption, col_spec=r"|L{4.6cm}|C{3.0cm}|C{2.0cm}|L{3.4cm}|",
+                         headers=["Parameter", "Value", "Unit", "Reference"], body=body, note=note)
+
+
+def ch3_loads(input_dict):
     from osdagbridge.core.utils.codes.irc6_2017 import IRC6_2017
     span = input_dict.get(KEY_SPAN)
-    impact_factor_str = ""
-    if span not in (None, ""):
-        try:
-            span_m = float(span)
-            factors = []
-            if input_dict.get(KEY_LL_IRC_CLASS_A):
-                im_a = IRC6_2017.cl_208_2_impact_factor(span_m)
-                factors.append(f"Class A: {1.0 + im_a:.3f}")
-            is_wheeled_heavy = (
-                input_dict.get(KEY_LL_IRC_70R_WHEELED) or 
-                input_dict.get(KEY_LL_IRC_AA_WHEELED) or 
-                input_dict.get(KEY_LL_IRC_70R_BOGIE)
-            )
-            is_tracked_heavy = (
-                input_dict.get(KEY_LL_IRC_70R_TRACKED) or 
-                input_dict.get(KEY_LL_IRC_AA_TRACKED)
-            )
-            if is_wheeled_heavy or is_tracked_heavy:
-                im_aa = IRC6_2017.cl_208_3_impact_factor(span_m)
-                factors.append(f"Class AA/70R: {1.0 + im_aa:.3f}")
-            
-            if factors:
-                impact_factor_str = ", ".join(factors)
-            else:
-                impact_factor_str = "N/A"
-        except Exception:
-            impact_factor_str = "N/A"
-    else:
-        impact_factor_str = "N/A"
+    custom = input_dict.get(KEY_LL_CUSTOM_VEHICLES)
 
-    # --- Vehicle live-load rows: one row per selected vehicle (Loading tab) ---
-    def _impact_for(kind):
+    # --- Impact factor (1 + IM) from the IRC6 backend ---------------------------
+    def _impact_for(kind, tracked=False):
         try:
             span_m = float(span)
             if kind == "A":
                 return f"{1.0 + IRC6_2017.cl_208_2_impact_factor(span_m):.3f}"
             if kind == "AA":
-                return f"{1.0 + IRC6_2017.cl_208_3_impact_factor(span_m):.3f}"
+                try:    # patched backend: cl_208_3_impact_factor(span, tracked=...)
+                    return f"{1.0 + IRC6_2017.cl_208_3_impact_factor(span_m, tracked=tracked):.3f}"
+                except TypeError:   # old backend (reads a global; cannot tell wheeled from tracked)
+                    return f"{1.0 + IRC6_2017.cl_208_3_impact_factor(span_m):.3f}"
         except Exception:
             pass
         return "N/A"
 
-    _VEH_SPEC = [  # (flag key, display name, impact class, impact basis)
-        (KEY_LL_IRC_CLASS_A,       "Class A",              "A",  "IRC 6 Cl. 208.2"),
-        (KEY_LL_IRC_70R_WHEELED,   "Class 70R (Wheeled)",  "AA", "IRC 6 Cl. 208.3"),
-        (KEY_LL_IRC_70R_TRACKED,   "Class 70R (Tracked)",  "AA", "IRC 6 Cl. 208.3"),
-        (KEY_LL_IRC_AA_WHEELED,    "Class AA (Wheeled)",   "AA", "IRC 6 Cl. 208.3"),
-        (KEY_LL_IRC_AA_TRACKED,    "Class AA (Tracked)",   "AA", "IRC 6 Cl. 208.3"),
-        (KEY_LL_IRC_CLASS_SV,      "Class SV",             None, "---"),
-        (KEY_LL_IRC_70R_BOGIE,     "Class 70R (Bogie)",    "AA", "IRC 6 Cl. 208.3"),
-        (KEY_LL_IRC_CLASS_FATIGUE, "Class Fatigue",        None, "---"),
-    ]
-    veh_rows = []
-    for _key, _name, _kind, _basis in _VEH_SPEC:
-        if input_dict.get(_key):
-            veh_rows.append([_name, _basis, _impact_for(_kind) if _kind else "N/A"])
-    for _c in (custom if isinstance(custom, list) else []):
-        _cn = _c.get("name") if isinstance(_c, dict) else (_c if isinstance(_c, str) else None)
-        if _cn:
-            veh_rows.append([_tex(str(_cn)), "User-defined", "N/A"])
-    if not veh_rows:
-        veh_rows.append(["None selected", "---", "---"])
-    veh_body = "\n".join(" & ".join(r) + r" \\[6pt]" + "\n" + r"\hline" for r in veh_rows)
-    veh_table = longtable_raw(
-        caption="Live Loads (LL) --- Vehicle Loading",
-        col_spec=r"|L{6.0cm}|C{4.2cm}|C{3.6cm}|",
-        headers=["Vehicle", "Impact Factor Basis", r"Impact Factor, $1+IM$"],
-        body=veh_body,
-        note="Vehicles are those selected in the Loading tab. Impact factor depends on the span.",
-    )
+    # --- Braking: eccentricity (height above roadway) ---------------------------
+    try:
+        brake_height = float(IRC6_2017.cl_211_3_braking_force_location()["height_m"])
+    except Exception:
+        brake_height = None
 
+    # (UI flag key, display name, impact class, total-load key, braking considered?, tracked?)
+    _VEH_SPEC = [
+        (KEY_LL_IRC_CLASS_A,       "Class A",              "A",  "A",       True,  False),
+        (KEY_LL_IRC_70R_WHEELED,   "Class 70R (Wheeled)",  "AA", "70R_W",   True,  False),
+        (KEY_LL_IRC_70R_TRACKED,   "Class 70R (Tracked)",  "AA", "70R_T",   True,  True),
+        (KEY_LL_IRC_AA_WHEELED,    "Class AA (Wheeled)",   "AA", "AA_W",    True,  False),
+        (KEY_LL_IRC_AA_TRACKED,    "Class AA (Tracked)",   "AA", "AA_T",    True,  True),
+        (KEY_LL_IRC_CLASS_SV,      "Class SV",             None, "SV",      False, False),
+        (KEY_LL_IRC_70R_BOGIE,     "Class 70R (Bogie)",    "AA", "70R_B",   True,  False),
+        (KEY_LL_IRC_CLASS_FATIGUE, "Class Fatigue",        None, "FATIGUE", False, False),
+    ]
+
+    veh_rows = []      # for the vehicle table
+    cf_vehicles = []   # (name, total_kN) for the centrifugal table
+    for _key, _name, _kind, _tkey, _brake, _trk in _VEH_SPEC:
+        if not input_dict.get(_key):
+            continue
+        total = _vehicle_total_kN(IRC6_2017, _tkey)
+        if _brake and total is not None:
+            b_val, b_ecc = _fmt(0.20 * total, 1), (_fmt(brake_height, 2) if brake_height is not None else "N/A")
+        elif _brake:
+            b_val, b_ecc = "N/A", (_fmt(brake_height, 2) if brake_height is not None else "N/A")
+        else:
+            b_val, b_ecc = _DASH, _DASH
+        veh_rows.append([_name, _fmt(total, 1), _impact_for(_kind, _trk) if _kind else "N/A",
+                         "Yes" if _brake else "No", b_val, b_ecc])
+        if _brake:
+            cf_vehicles.append((_name, total))
+
+    for _c in (custom if isinstance(custom, list) else []):
+        if isinstance(_c, dict) and _c.get("name"):
+            _cn = _tex(str(_c["name"]))
+            _tot = None
+            for _k in ("total_load", "total_load_kN", "total", "weight", "load"):
+                _tot = _num(_c.get(_k))
+                if _tot is not None:
+                    break
+            veh_rows.append([_cn, _fmt(_tot, 1), "N/A", "N/A", "N/A", "N/A"])
+        elif isinstance(_c, str) and _c:
+            veh_rows.append([_tex(_c), "N/A", "N/A", "N/A", "N/A", "N/A"])
+
+    if not veh_rows:
+        veh_rows.append(["None selected"] + [_DASH] * 5)
+
+    veh_body = "\n".join(
+        " & ".join(r) + (r" \\" if idx == len(veh_rows) - 1 else r" \\[4pt]") + "\n" + r"\hline"
+        for idx, r in enumerate(veh_rows)
+    )
+    _span_txt = f"{float(span):g} m" if _num(span) is not None else "the design span"
+    veh_note = (r"Vehicles are those selected in the Loading tab. Impact factor $= 1+IM$ at span "
+                + _span_txt + r" (IRC 6 Cl. 208.2 for Class A; Cl. 208.3 for Class 70R / AA). "
+                r"Braking value $= 20\,\%$ of the vehicle's total load (IRC 6 Cl. 211.2), acting at the "
+                r"eccentricity shown above the roadway (Cl. 211.3). Class SV and fatigue vehicles carry "
+                r"no braking load.")
+    _veh_spec = r"|L{3.0cm}|C{2.2cm}|C{1.8cm}|C{2.5cm}|C{1.9cm}|C{2.6cm}|"
+    veh_table = (
+        r"\begingroup\setlength{\tabcolsep}{4pt}" + "\n"   # 6 columns: tighter padding than the default
+        + _two_row_header_longtable("Live Loads (LL) --- Vehicle Loading", _veh_spec, veh_note)
+        + veh_body + "\n" + r"\end{longtable}" + "\n" + r"\endgroup")
+
+    # --- Braking summary (bridge level) -----------------------------------------
     lanes = input_dict.get(KEY_WC_LD_LANE_TABLE_COUNT)
-    braking_force_str = ""
+    if lanes in (None, "", 0, "0"):
+        _cw = _find_input(input_dict, "carriageway", exclude=("type", "median"))
+        if _cw and _cw > 0:
+            try:
+                lanes = IRC6_2017.table_6(_cw)      # design lanes from carriageway width
+            except Exception:
+                pass
+    braking_kN = None
     if lanes not in (None, ""):
         try:
-            lanes_int = int(lanes)
-            braking_force_t = IRC6_2017.cl_211_2_braking_force(lanes_int)
-            braking_force_kN = braking_force_t * 9.81
-            braking_force_str = f"{braking_force_kN:.2f} kN ({braking_force_t:.2f} tonnes)"
+            raw = float(IRC6_2017.cl_211_2_braking_force(int(lanes)))
+            # cl_211_2_braking_force returns Newtons; convert N -> kN
+            braking_kN = raw / 1000.0 if raw > 5000.0 else raw
         except Exception:
-            braking_force_str = "N/A"
-    else:
-        braking_force_str = "N/A"
+            braking_kN = None
+    brake = _vu_table("Live Loads (LL) --- Braking Force", [
+        ("Number of design lanes", _tex(str(lanes)) if lanes not in (None, "") else "N/A", _DASH, "IRC 6 Table 6"),
+        ("Total braking force", _fmt(braking_kN, 2), "kN", "IRC 6 Cl. 211.2"),
+        ("Point of application (above roadway)", _fmt(brake_height, 2), "m", "IRC 6 Cl. 211.3"),
+    ])
 
+    # --- Centrifugal force (IRC 6 Cl. 212): C = W v^2 / (127 R) -----------------
+    radius = _find_input(input_dict, "radius")
+    speed = _find_input(input_dict, "speed", exclude=("wind",))
+    if radius and radius > 0 and speed and speed > 0:
+        cf_rows = []
+        for _name, _tot in cf_vehicles:
+            c_kN = (_tot * speed ** 2 / (127.0 * radius)) if _tot is not None else None
+            cf_rows.append((_name, _fmt(radius, 1), _fmt(speed, 1), _fmt(c_kN, 1),
+                            _fmt(brake_height, 2) if brake_height is not None else "N/A"))
+        if not cf_rows:
+            cf_rows.append(("None selected", _DASH, _DASH, _DASH, _DASH))
+        cf_body = "\n".join(" & ".join(r) + r" \\[6pt]" + "\n" + r"\hline" for r in cf_rows)
+        cf_table = longtable_raw(
+            caption="Live Loads (LL) --- Centrifugal Force",
+            col_spec=r"|L{3.6cm}|C{2.2cm}|C{2.4cm}|C{2.6cm}|C{2.4cm}|",
+            headers=["Vehicle", "Radius, R (m)", "Speed, V (km/h)", "Force, C (kN)", "Eccentricity (m)"],
+            body=cf_body,
+            note=r"$C = W\,V^2 / (127\,R)$ (IRC 6 Cl. 212.2), applied 1.2 m above the roadway. "
+                 r"Applies to curved alignments only.")
+    else:
+        cf_table = _vu_table("Live Loads (LL) --- Centrifugal Force", [
+            ("Radius of curvature, R", "N/A", "m", "IRC 6 Cl. 212"),
+            ("Centrifugal force, C", "Not applicable", "kN", "IRC 6 Cl. 212.2"),
+        ], note="Centrifugal force acts on curved alignments only. No radius of curvature was "
+                "found in the design inputs, so the alignment is treated as straight.")
+
+    # --- Footway loading --------------------------------------------------------
     fp_mode  = input_dict.get(KEY_LL_FOOTPATH_PRESSURE_MODE, "")
     fp_value = input_dict.get(KEY_LL_FOOTPATH_PRESSURE_VALUE, "")
+    fp_ref = "Loading tab"
     if str(fp_mode).strip().lower() in ("as per irc 6", "as per irc6", "automatic"):
         try:
-            fp_str = f"{IRC6_2017.cl_206_1_footway_load():.3f} kN/m² (IRC 6 Cl. 206.1)"
+            fp_num = float(IRC6_2017.cl_206_1_footway_load())
+            fp_ref = "IRC 6 Cl. 206.1"
         except Exception:
-            fp_str = "N/A"
-    elif fp_value not in (None, ""):
-        fp_str = f"{fp_value} kN/m²"
+            fp_num = None
     else:
-        fp_str = "N/A"
+        fp_num = _num(fp_value)
+    footway = _vu_table("Live Loads (LL) --- Footway Loading", [
+        ("Footway pressure mode", _tex(str(fp_mode)) if str(fp_mode).strip() else "N/A", _DASH, "Loading tab"),
+        ("Footway live load intensity", _fmt(fp_num, 3), r"kN/m\textsuperscript{2}", fp_ref),
+    ])
 
     # Vz / Pz — prefer stored computed values; fall back to IRC6 Table 12
     vz_val = input_dict.get(KEY_WL_HOURLY_MEAN_WIND)
@@ -328,23 +457,15 @@ def ch3_loads(input_dict):
         ("Additional SIDL (Crash Barrier)", _render_value(input_dict, KEY_CB_LOAD) + " kN/m per barrier"),
         ("Railing Load", _render_value(input_dict, KEY_RL_LOAD_VALUE) + r" kN/m\sdstar{}"),
     ])
-    brake = _kv_table("Live Loads (LL) --- Braking Force", [
-        ("Number of Lanes", _tex(str(lanes)) if lanes not in (None, "") else "N/A"),
-        ("Braking Load (IRC 6 Cl. 211.2)", _tex(braking_force_str)),
-    ])
-    footway = _kv_table("Live Loads (LL) --- Footway Loading", [
-        ("Footway Pressure Mode", _tex(str(fp_mode)) if str(fp_mode).strip() else "N/A"),
-        ("Footway Live Load Intensity", _tex(fp_str)),
-    ])
     wind = _kv_table(r"Wind Load (WL) --- per IRC 6", [
         ("Basic Wind Speed, Vb", _render_value(input_dict, "wind_speed", " m/s") + " [from Project Location]"),
         ("Terrain Type", _render_value(input_dict, KEY_WL_TERRAIN_TYPE)),
         ("Average Exposed Height, H (m)", _render_value(input_dict, KEY_WL_AVG_EXPOSED_HEIGHT, " m")),
-        ("Hourly Mean Wind Speed, Vz", _render_value(input_dict, KEY_WL_HOURLY_MEAN_WIND, " m/s")),
-        ("Hourly Wind Pressure, Pz", _render_value(input_dict, KEY_WL_HOURLY_WIND_PRESSURE, r" N/m\textsuperscript{2}")),
-        ("Transverse Wind Force", _render_value(input_dict, KEY_WL_TRANSVERSE_WIND_FORCE, " kN")),
-        ("Longitudinal Wind Force", _render_value(input_dict, KEY_WL_LONGITUDINAL_WIND_FORCE, " kN")),
-        ("Vertical Wind Force", _render_value(input_dict, KEY_WL_VERTICAL_WIND_FORCE, " kN")),
+        ("Hourly Mean Wind Speed, Vz", vz_str),
+        ("Hourly Wind Pressure, Pz", pz_str.replace("N/m²", r"N/m\textsuperscript{2}")),
+        ("Transverse Wind Force", _na(_render_value(input_dict, KEY_WL_TRANSVERSE_WIND_FORCE, " kN"))),
+        ("Longitudinal Wind Force", _na(_render_value(input_dict, KEY_WL_LONGITUDINAL_WIND_FORCE, " kN"))),
+        ("Vertical Wind Force", _na(_render_value(input_dict, KEY_WL_VERTICAL_WIND_FORCE, " kN"))),
     ])
     quake = _kv_table(r"Earthquake Load (EL) --- per IRC 6", [
         ("Seismic Zone", _render_value(input_dict, "seismic_zone") + " [from Project Location]"),
@@ -354,8 +475,6 @@ def ch3_loads(input_dict):
         ("Sa/g", _render_value(input_dict, KEY_SL_SPECTRAL_COEFF)),
         ("Horizontal Seismic Coefficient, Ah", _render_value(input_dict, KEY_SL_HORIZONTAL_COEFF)),
         ("Vertical Seismic Coefficient, Av", _render_value(input_dict, KEY_SL_VERTICAL_COEFF)),
-        ("Horizontal Seismic Force (longitudinal)", " kN"),
-        ("Horizontal Seismic Force (transverse)", " kN"),
     ])
     temp = _kv_table(r"Temperature Load (TL) --- per IRC 6", [
         ("Maximum Shade Temperature", _render_value(input_dict, "shade_temp_max") + r" $^\circ$C"),
@@ -378,4 +497,6 @@ def ch3_loads(input_dict):
 
 This section summarizes all loads applied to the bridge and the load combinations considered for analysis and design.
 """
-    return intro + "".join(_VSP + t for t in (dead, surf, veh_table, brake, footway, wind, quake, temp, combos)) + "\n"
+    return intro + "".join(
+        _VSP + t for t in (dead, surf, veh_table, brake, cf_table, footway, wind, quake, temp, combos)
+    ) + "\n"

@@ -102,11 +102,12 @@
 #                                                          if dialog.is_preview → os.startfile(pdf_path)
 #                                                          else → CustomMessageBox("Report Saved")
 #==============================================================================
-
+from .table_utils import apply_table_theme, COLOR_DEFS
+from .layout_theme import apply_figure_theme, FIGURE_CAPTION_SETUP
 import os, shutil, logging, datetime, tempfile, subprocess
 from dataclasses import dataclass, field
 from typing import Optional, List, Literal
-
+from .summary_charts import build_summary_charts, build_material_charts, material_charts_tex
 from osdagbridge.core.utils.common import (
     KEY_DESIGN_MODE,
     KEY_SPAN,
@@ -132,6 +133,7 @@ from .chap9 import references
 from . import styles as S
 from .charts import build_ur_matrix, ur_heatmap_png, design_fingerprint, qr_png
 
+from .report_sanitize import prune_stale_girders
 logger = logging.getLogger(__name__)
 
 # --- TEMPLATES START ---
@@ -205,6 +207,7 @@ def preamble(project_name, job_number, report_date, report_version='Rev 0'):
     format=plain
 }
 \usepackage{subcaption}
+""" + FIGURE_CAPTION_SETUP + r"""
 \usepackage{multirow}
 \usepackage{colortbl}
 \usepackage{longtable}
@@ -234,8 +237,7 @@ def preamble(project_name, job_number, report_date, report_version='Rev 0'):
 % (no needspace hook for longtable: it duplicates the table header)
 
 \definecolor{osdagGreen}{HTML}{""" + S.C["primary"] + r"""}
-
-""" + _pagestyle("main", pn, jn, rd, rv) + _pagestyle("plain", pn, jn, rd, rv) + r"""
+""" + COLOR_DEFS + _pagestyle("main", pn, jn, rd, rv) + _pagestyle("plain", pn, jn, rd, rv) + r"""
 \fancypagestyle{firstpage}{
   \fancyhf{}
   \renewcommand{\headrulewidth}{0pt}
@@ -272,6 +274,15 @@ def preamble(project_name, job_number, report_date, report_version='Rev 0'):
 # ═══════════════════════════════════════════════════════════════════════════════
 # TITLE PAGE
 # ═══════════════════════════════════════════════════════════════════════════════
+
+def _n_girders_of(inputs):
+    """Number of girders in this design (None if unknown)."""
+    from osdagbridge.core.utils.common import KEY_TS_NO_OF_GIRDERS
+    try:
+        return int(inputs.get(KEY_TS_NO_OF_GIRDERS))
+    except (TypeError, ValueError):
+        return None
+
 
 def _fingerprint_block(fp, qr_path=None):
     """Title-page traceability block: QR code + readable fingerprint."""
@@ -342,6 +353,8 @@ def title_page(m, osdag_logo, org_logo, fingerprint=None, qr_path=None):
 \hline
 \end{tabular}
 """ + _fingerprint_block(fingerprint, qr_path) + r"""\end{titlepage}
+% titlepage resets the page counter to 1; the TOC is physical page 2
+\setcounter{page}{2}
 """
 
 
@@ -840,6 +853,7 @@ _FIGURE_MAP = [
 ]
 
 def generate_report(payload, request):
+    payload.output_dict = prune_stale_girders(payload.output_dict, payload.inputs)
     # type: (ReportPayload, ReportRequest) -> ReportResult
     """Compile the full OsdagBridge Design Report to PDF (+ .tex source)."""
     tex_path = None
@@ -920,7 +934,7 @@ def generate_report(payload, request):
 
             # UR heatmap (Chapter 5, Utilization Overview)
             try:
-                _r, _c, _d = build_ur_matrix(payload.output_dict)
+                _r, _c, _d = build_ur_matrix(payload.output_dict, _n_girders_of(payload.inputs))
                 _png = ur_heatmap_png(_r, _c, _d)
                 if _png:
                     _hp = os.path.join(tmp_images, 'ur_heatmap.png')
@@ -937,7 +951,7 @@ def generate_report(payload, request):
             # ── Assemble LaTeX document (fig_paths now has tmp_dir paths) ──
             bridge = ReportDataBridge(payload.output_dict, payload.inputs, payload)
             span_m = float(payload.inputs.get(KEY_SPAN, 0) or 0)
-
+            build_summary_charts(tmp_images, payload.output_dict, payload.inputs, bridge, fig_paths)
             doc_parts = []
             doc_parts.append(preamble(payload.metadata.project_name, payload.metadata.job_number, payload.metadata.report_date, payload.metadata.subtitle or 'Rev 0'))
             doc_parts.append(title_page(payload.metadata, osdag_logo_latex, org_logo_latex, fingerprint, qr_path))
@@ -963,8 +977,8 @@ def generate_report(payload, request):
             if 'drawings' in secs and payload.options.include_figures:
                 doc_parts.append(ch6_drawings(fig_paths))
 
-            doc_parts.append(ch7_quantities(payload.inputs))
-
+            build_material_charts(tmp_images, payload.inputs, fig_paths)
+            doc_parts.append(ch7_quantities(payload.inputs, fig_paths))
             mode = str(payload.inputs.get(KEY_DESIGN_MODE, "Optimized")).strip().lower()
             is_custom = mode in {"custom", "customized"}
         
@@ -974,7 +988,7 @@ def generate_report(payload, request):
             doc_parts.append(references())
             doc_parts.append(r"\end{document}")
 
-            full_tex = "\n".join(doc_parts)
+            full_tex = apply_figure_theme(apply_table_theme("\n".join(doc_parts)))
 
 
             # NOTE: longtable header repetition is handled per-table in each

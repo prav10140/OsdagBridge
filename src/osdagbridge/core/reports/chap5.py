@@ -2,7 +2,7 @@
 from __future__ import annotations
 from typing import TYPE_CHECKING
 from osdagbridge.core.reports.charts import ur_overview_tex
-
+from osdagbridge.core.reports.summary_charts import ur_bar_charts_tex
 from osdagbridge.core.utils.common import (
     KEY_DD_AS_BOT,
     KEY_DD_AS_LONG,
@@ -1395,6 +1395,6 @@ End diaphragms at the supports transfer transverse loads to the bearings, restra
 % ===========================
 """)
     parts.append(_VSP + t522_table + "\n")
+    parts.append(ur_bar_charts_tex(fig_paths))
     parts.append(ur_overview_tex(od, (fig_paths or {}).get("ur_heatmap")))
-    return "\n".join(parts)
     return "\n".join(parts)
